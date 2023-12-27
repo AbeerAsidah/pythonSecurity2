@@ -28,6 +28,7 @@ def main():
             national_id = input("Enter national ID for registration: ")  # إضافة سطر للرقم الوطني
             register_password = input("Enter password for registration: ")
             client.register(register_username, register_password, national_id)
+            # client.get_additional_info()
 
         elif choice == "2":
             # Login with an existing user

@@ -110,66 +110,95 @@ class Server:
     def handle_client(self, client_socket):
         try:
             request = client_socket.recv(4096).decode('utf-8')
+            logging.debug(f"Received request: {request}")
             request_data = json.loads(request)
             shared_key_str = request_data.get("shared_key", "")
             shared_key = base64.b64decode(shared_key_str)
 
-            if "action" not in request_data or "username" not in request_data or "password" not in request_data:
+            if "action" not in request_data:
+                # if "action" not in request_data or "username" not in request_data or "password" not in request_data:
+
                 response = {"status": "failure", "message": "Invalid request format."}
             else:
                 if request_data["action"] == "login":
                     username = request_data["username"]
                     encrypted_password = request_data["password"]
-                    # national_id = request_data.get("national_id")
 
-                    # shared_key_str = request_data.get("shared_key", "")
-                    # shared_key = base64.b64decode(shared_key_str)
-
-                    # Decrypt password using the shared key
-
-                    # self.db_cursor.execute("SELECT national_id FROM users WHERE username = %s", (username,))
-                    # result2 = self.db_cursor.fetchone()
-                    # if result2:
-                    #     national_id = result2[0]
-                    #
-                    #     # Generate shared key using the retrieved national ID
-                    #     shared_key = self.generate_key(national_id)
                     decrypted_password = self.decrypt_data(encrypted_password, shared_key)
 
-                    self.db_cursor.execute("SELECT password FROM users WHERE username = %s", (username,))
-                    result = self.db_cursor.fetchone()
-
-                    if result:
-                        stored_password = result[0]
-                        if decrypted_password and self.verify_password(decrypted_password, stored_password):
-                            response = {"status": "success", "message": "Login successful!"}
-                        else:
-                            response = {"status": "failure", "message": "Invalid credentials."}
+                    if len(username) < 8 or len(decrypted_password) < 8:
+                        response = {"status": "failure", "message": "Invalid input length."}
                     else:
-                        response = {"status": "failure",
-                                    "message": "Username not found. Do you want to create an account?"}
+
+                        self.db_cursor.execute("SELECT password FROM users WHERE username = %s", (username,))
+                        result = self.db_cursor.fetchone()
+
+                        if result:
+                            stored_password = result[0]
+                            if decrypted_password and self.verify_password(decrypted_password, stored_password):
+                                response = {"status": "success", "message": "Login successful!"}
+                            else:
+                                response = {"status": "failure", "message": "Invalid credentials."}
+                        else:
+                            response = {"status": "failure",
+                                        "message": "Username not found. Do you want to create an account?"}
 
                 elif request_data["action"] == "register":
                     username = request_data["username"]
                     national_id = request_data.get("national_id", None)
-                    # shared_key_str = request_data.get("shared_key", "")
-                    # shared_key = base64.b64decode(shared_key_str)
+                    decrypted_password = self.decrypt_data(request_data["password"], shared_key)
+                    print(f"Decrypted password: {request_data["username"]}")
+                    if len(username) < 8 or len(decrypted_password) < 8 or (national_id and len(national_id) < 10):
+                        response = {"status": "failure", "message": "Invalid input length."}
 
-                    decrypted_password = self.decrypt_data(request_data["password"],shared_key)
-
-                    if decrypted_password and national_id:
-                        hashed_password = self.hash_password(decrypted_password)
-                        self.db_cursor.execute(
-                            "INSERT INTO users (username, password, national_id, registration_time) VALUES (%s, %s, %s, %s)",
-                            (username, hashed_password, national_id, None))
-                        self.db_connection.commit()
-                        response = {"status": "success", "message": "Account created successfully!"}
                     else:
-                        response = {"status": "failure", "message": "Invalid password or national ID."}
+
+                        # Check if the username already exists
+                        self.db_cursor.execute("SELECT COUNT(*) FROM users WHERE username = %s", (username,))
+                        username_count = self.db_cursor.fetchone()[0]
+
+                        # Check if the national ID already exists
+                        self.db_cursor.execute("SELECT COUNT(*) FROM users WHERE national_id = %s", (national_id,))
+                        national_id_count = self.db_cursor.fetchone()[0]
+
+                        if username_count > 0 or national_id_count > 0:
+                            # Either username or national ID is taken
+                            response = {"status": "failure",
+                                        "message": "Username or National ID already exists. Do you want to exit or enter new values?"}
+                        else:
+                            if decrypted_password and national_id:
+                                hashed_password = self.hash_password(decrypted_password)
+                                self.db_cursor.execute(
+                                    "INSERT INTO users (username, password, national_id, registration_time) VALUES (%s, %s, %s, %s)",
+                                    (username, hashed_password, national_id, None))
+                                self.db_connection.commit()
+                                response = {"status": "success", "message": "Account created successfully!"}
+                            else:
+                                response = {"status": "failure", "message": "Invalid password."}
+
+                elif request_data["action"] == "add_additional_info":
+                    national_id = request_data.get("national_id", "")
+                    phone_number = self.decrypt_data(request_data["phone_number"], shared_key)
+                    mobile_number = self.decrypt_data(request_data["mobile_number"], shared_key)
+                    address = self.decrypt_data(request_data["address"], shared_key)
+                    print(f"Error sending/شى data:")
+                    query = "UPDATE users SET phone_number = %s, mobile_number = %s, address = %s " \
+                            "WHERE national_id = %s"
+
+                    data = (phone_number, mobile_number, address, national_id)
+
+                    self.db_cursor.execute(query, data)
+                    self.db_connection.commit()
+
+                    response = {
+                        "status": "success",
+                        "message": "Additional information added successfully."
+                        # "allow_additional_info": True  # Adjust this based on your logic
+                    }
+
                 else:
                     response = {"status": "failure", "message": "Invalid action."}
 
-            # Encrypt and send the response
             encrypted_response = self.encrypt_data(json.dumps(response), shared_key)
             client_socket.send(encrypted_response.encode('utf-8'))
 
