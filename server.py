@@ -7,9 +7,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 import base64
-# import os
-# import secrets
 import logging
+import gnupg
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -22,8 +21,8 @@ class Server:
         # Database configuration
         self.db_config = {
             'host': 'localhost',
-            'user': 'abeer2222',  # Replace with your MySQL username
-            'password': '12aa12aa',  # Replace with your MySQL password
+            'user': 'abeer2222',
+            'password': '12aa12aa',
             'database': 'pythonsecurity'
         }
 
@@ -38,16 +37,25 @@ class Server:
         logging.info(f"Server is listening on {self.host}:{self.port}...")
 
     def pad_data(self, data):
-        if isinstance(data, str):
-            data = data.encode('utf-8')
-
         block_size = 16
-        padding = block_size - (len(data) % block_size)
-        return data + bytes([padding] * padding)
+        padding_size = block_size - (len(data) % block_size)
+        padding = bytes([padding_size] * padding_size)
+        return data + padding
 
     def remove_padding(self, data):
+        if not data:
+            return b''  # Data may be empty
+
         padding = data[-1]
-        return data[:-padding]
+
+        if padding > len(data):
+            return b''  # Incorrect padding for the data
+
+        removed_padding_data = data[:-padding]
+        return removed_padding_data
+
+
+
 
     def encrypt_data(self, data, shared_key):
         try:
@@ -57,9 +65,6 @@ class Server:
                 cipher = Cipher(algorithms.AES(shared_key), modes.CFB(b'\x00' * 16), backend=default_backend())
                 encryptor = cipher.encryptor()
                 encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-
-                logging.debug(f'Encrypted data: {base64.b64encode(encrypted_data).decode("utf-8")}')
-
                 return base64.b64encode(encrypted_data).decode('utf-8')
             else:
                 logging.error("Shared key is None. Cannot encrypt data.")
@@ -68,18 +73,39 @@ class Server:
             logging.error(f'Encryption error: {e}')
             return None
 
-    def decrypt_data(self, encrypted_data, shared_key):
+
+
+
+
+    def decrypt_data(self, encrypted_data, shared_key_str):
         try:
-            if shared_key is not None:
-                cipher = Cipher(algorithms.AES(shared_key), modes.CFB(b'\x00' * 16), backend=default_backend())
+            print(f'hii')
+
+            if shared_key_str is not None:
+                padding_needed = len(shared_key_str) % 4
+                if padding_needed > 0:
+                    # Add padding to make the length a multiple of 4
+                    shared_key_str += '=' * (4 - padding_needed)
+                # shared_key = base64.b64decode(shared_key_str)
+                if len(shared_key_str) not in {16, 24, 32}:
+                    logging.error("Shared key length is not valid for AES.")
+                    return None
+                print(f'Shared key type: {type(shared_key_str)}, length: {len(shared_key_str)}')
+                print(f'hiii')
+                cipher = Cipher(algorithms.AES(shared_key_str), modes.CFB(b'\x00' * 16), backend=default_backend())
+                print(f'h')
                 decryptor = cipher.decryptor()
                 decrypted_data = decryptor.update(base64.b64decode(encrypted_data)) + decryptor.finalize()
+                print(f"Decrypted data (raw): {decrypted_data}")
 
                 if decrypted_data is not None:
                     decoded_data = self.remove_padding(decrypted_data)
+                    print(f"Decoded data: {decoded_data}")
+
                     if decoded_data is not None:
-                        logging.debug(f'Decrypted data: {decoded_data.decode("utf-8")}')
+
                         return decoded_data.decode('utf-8')
+
                     else:
                         logging.error("Decoding error: remove_padding returned None")
                         return None
@@ -93,6 +119,8 @@ class Server:
             logging.error(f'Decryption error: {e}')
             return None
 
+
+
     def hash_password(self, password):
         if isinstance(password, bytes):
             password_bytes = password
@@ -104,8 +132,51 @@ class Server:
         hashed_password = hashlib.sha256(password_bytes).hexdigest()
         return hashed_password
 
+
+
     def generate_key(self, national_id):
         return hashlib.sha256(national_id.encode()).digest()
+
+
+
+    def encrypt_shared_key(self,shared):
+        try:
+            gnupg_home = 'C:/Users/iStore/AppData/Roaming/gnupg'
+
+            gpg = gnupg.GPG(gnupghome=gnupg_home)
+            keys = gpg.list_keys()
+
+            if keys:
+                recipient = keys[0]['fingerprint']
+                encrypted_shared_key = gpg.encrypt(str(shared), recipients=[recipient])
+                return str(encrypted_shared_key)
+            else:
+                logging.error("No public key found in the specified GnuPG home directory.")
+                return None
+
+        except Exception as e:
+            logging.error(f'Error during encryption: {e}')
+            return None
+
+    def decrypt_shared_key(self, encrypted_shared_key):
+        try:
+            gnupg_home = 'C:/Users/iStore/AppData/Roaming/gnupg'
+            gpg = gnupg.GPG(gnupghome=gnupg_home)
+
+            # Convert encrypted_shared_key to bytes if it's not already
+            logging.debug(f'Before conversion: {encrypted_shared_key}')
+            if not isinstance(encrypted_shared_key, bytes):
+                encrypted_shared_key = encrypted_shared_key.encode('utf-8')
+            logging.debug(f'After conversion: {encrypted_shared_key}')
+
+            decrypted_shared_key = gpg.decrypt(encrypted_shared_key, passphrase='abeer2001')
+
+            # Extract the decrypted bytes
+            decrypted_data = decrypted_shared_key.data
+            return decrypted_data
+        except Exception as e:
+            logging.error(f'Error during decryption: {e}')
+            return None
 
     def handle_client(self, client_socket):
         try:
@@ -113,17 +184,20 @@ class Server:
             logging.debug(f"Received request: {request}")
             request_data = json.loads(request)
             shared_key_str = request_data.get("shared_key", "")
-            shared_key = base64.b64decode(shared_key_str)
+
+            shared_key = self.decrypt_shared_key(shared_key_str)
+            # print(f"shared_key : {shared_key}")
+            # print(f"re : {request_data["username"]}")
 
             if "action" not in request_data:
                 # if "action" not in request_data or "username" not in request_data or "password" not in request_data:
-
                 response = {"status": "failure", "message": "Invalid request format."}
             else:
                 if request_data["action"] == "login":
-                    username = request_data["username"]
-                    encrypted_password = request_data["password"]
+                    username = self.decrypt_data(request_data["username"], shared_key)
 
+                    encrypted_password = request_data["password"]
+                    # print(f'encrypted_password_bytes :{encrypted_password}')
                     decrypted_password = self.decrypt_data(encrypted_password, shared_key)
 
                     if len(username) < 8 or len(decrypted_password) < 8:
@@ -144,10 +218,14 @@ class Server:
                                         "message": "Username not found. Do you want to create an account?"}
 
                 elif request_data["action"] == "register":
-                    username = request_data["username"]
-                    national_id = request_data.get("national_id", None)
-                    decrypted_password = self.decrypt_data(request_data["password"], shared_key)
-                    print(f"Decrypted password: {request_data["username"]}")
+                    username = self.decrypt_data(request_data["username"], shared_key)
+                    national_id1 = request_data.get("national_id", None)
+                    national_id = self.decrypt_data(national_id1, shared_key)
+
+                    encrypted_password = request_data["password"]
+                    # print(f'encrypted_password_bytes :{encrypted_password}')
+                    decrypted_password = self.decrypt_data(encrypted_password, shared_key)
+
                     if len(username) < 8 or len(decrypted_password) < 8 or (national_id and len(national_id) < 10):
                         response = {"status": "failure", "message": "Invalid input length."}
 
@@ -181,7 +259,6 @@ class Server:
                     phone_number = self.decrypt_data(request_data["phone_number"], shared_key)
                     mobile_number = self.decrypt_data(request_data["mobile_number"], shared_key)
                     address = self.decrypt_data(request_data["address"], shared_key)
-                    print(f"Error sending/شى data:")
                     query = "UPDATE users SET phone_number = %s, mobile_number = %s, address = %s " \
                             "WHERE national_id = %s"
 
@@ -213,8 +290,12 @@ class Server:
                 logging.info("Database connection closed.")
             client_socket.close()
 
+
+
     def verify_password(self, input_password, stored_password):
         return self.hash_password(input_password) == stored_password
+
+
 
     def start_server(self):
         while not self.exit_flag:
@@ -232,7 +313,7 @@ class Server:
 
 if __name__ == "__main__":
     try:
-        server = Server('0.0.0.0', 12356)
+        server = Server('0.0.0.0', 12352)
         server.start_server()
     except KeyboardInterrupt:
         server.exit_flag = True  # Set the flag when KeyboardInterrupt (Ctrl+C) is detected

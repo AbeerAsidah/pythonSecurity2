@@ -1,33 +1,30 @@
 import socket
 import json
 import hashlib
-# import sys
-
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-# from base64 import b64encode, b64decode
 import base64
 import logging
+import gnupg
 
 
 
 class Client:
-    def __init__(self, server_address=('127.0.0.1', 12356), national_id=None):
+    def __init__(self, server_address=('127.0.0.1', 12352), national_id=None):
         self.server_address = server_address
         self.shared_key = None  # سيتم تعيين المفتاح في register أو login
         self.national_id = national_id
         self.phone_number = None
         self.mobile_number = None
         self.address = None
+        # self.gpg = gnupg.GPG(gnupghome='C:\\Users\\iStore\\AppData\\Roaming\\gnupg')
 
     def pad_data(self, data):
-        if isinstance(data, str):
-            data = data.encode('utf-8')
-
         block_size = 16
-        padding = block_size - (len(data) % block_size)
-        return data + bytes([padding] * padding)
+        padding_size = block_size - (len(data) % block_size)
+        padding = bytes([padding_size] * padding_size)
+        return data + padding
 
     def generate_key(self, national_id):
         # Convert the national ID to a key
@@ -58,24 +55,34 @@ class Client:
             logging.error(f'Encryption error: {e}')
             return None
 
+
+
     def decrypt_data(self, encrypted_data):
         try:
+
             if self.shared_key is not None:
+                padding_needed = len(self.shared_key) % 4
+                if padding_needed > 0:
+                    # Add padding to make the length a multiple of 4
+                    self.shared_key += '=' * (4 - padding_needed)
+
+                if len(self.shared_key) not in {16, 24, 32}:
+                    logging.error("Shared key length is not valid for AES.")
+                    return None
+
+                # print(f'Shared key type: {type(self.shared_key)}, length: {len(self.shared_key)}')
                 cipher = Cipher(algorithms.AES(self.shared_key), modes.CFB(b'\x00' * 16), backend=default_backend())
                 decryptor = cipher.decryptor()
                 decrypted_data = decryptor.update(base64.b64decode(encrypted_data)) + decryptor.finalize()
+                # print(f"Decrypted data (raw): {decrypted_data}")
 
                 if decrypted_data is not None:
-                    # print(f"Decrypted bytes (hex): {decrypted_data.hex()}")
-
                     decoded_data = self.remove_padding(decrypted_data)
+                    # print(f"Decoded data: {decoded_data}")
+
                     if decoded_data is not None:
-                        try:
-                            json_response = json.loads(decoded_data.decode('utf-8'))
-                            return json_response
-                        except json.JSONDecodeError as json_error:
-                            logging.error(f"JSON decoding error: {json_error}")
-                            return None
+                        return decoded_data.decode('utf-8')
+
                     else:
                         logging.error("Decoding error: remove_padding returned None")
                         return None
@@ -91,17 +98,76 @@ class Client:
 
     def remove_padding(self, data):
         if not data:
-            return b''  # قد تكون البيانات فارغة
+            return b''  # Data may be empty
 
         padding = data[-1]
-        # print(f"Padding value: {padding}")
 
         if padding > len(data):
-            return b''  # صورة غير صحيحة للحشو
+            return b''  # Incorrect padding for the data
 
         removed_padding_data = data[:-padding]
-        # print(f"Removed padding data (hex): {removed_padding_data.hex()}")
         return removed_padding_data
+
+    # def generate_pgp_key(self):
+    #     try:
+    #         input_data = self.gpg.gen_key_input(
+    #             key_type="RSA", key_length=2048, name_email=f"{self.national_id}@example.com", passphrase="passphrase"
+    #         )
+    #         key = self.gpg.gen_key(input_data)
+    #         return key
+    #     except Exception as e:
+    #         logging.error(f'PGP key generation error: {e}')
+    #         return None
+    #
+    # def export_pgp_keys(self):
+    #     try:
+    #         public_key = self.gpg.export_keys(self.national_id)
+    #         private_key = self.gpg.export_keys(self.national_id, True)
+    #         return public_key, private_key
+    #     except Exception as e:
+    #         logging.error(f'Error exporting PGP keys: {e}')
+    #         return None, None
+
+
+    def encrypt_shared_key(self):
+        try:
+            gnupg_home = 'C:/Users/iStore/AppData/Roaming/gnupg'
+
+            gpg = gnupg.GPG(gnupghome=gnupg_home)
+            keys = gpg.list_keys()
+
+            if keys:
+                recipient = keys[0]['fingerprint']
+                encrypted_shared_key = gpg.encrypt(self.shared_key, recipients=[recipient])
+                return str(encrypted_shared_key)
+            else:
+                logging.error("No public key found in the specified GnuPG home directory.")
+                return None
+
+        except Exception as e:
+            logging.error(f'Error during encryption: {e}')
+            return None
+
+    def decrypt_shared_key(self, encrypted_shared_key):
+        try:
+            gnupg_home = 'C:/Users/iStore/AppData/Roaming/gnupg'
+
+            gpg = gnupg.GPG(gnupghome=gnupg_home)
+
+            # Convert encrypted_shared_key to bytes if it's not already
+            # logging.debug(f'Before conversion: {encrypted_shared_key}')
+            if not isinstance(encrypted_shared_key, bytes):
+                encrypted_shared_key = encrypted_shared_key.encode('utf-8')
+
+            # logging.debug(f'After conversion: {encrypted_shared_key}')
+            decrypted_shared_key = gpg.decrypt(encrypted_shared_key, passphrase='abeer2001')
+
+            # Extract the decrypted bytes
+            decrypted_data = decrypted_shared_key.data
+            return decrypted_data
+        except Exception as e:
+            logging.error(f'Error during decryption: {e}')
+            return None
 
     def add_additional_info(self):
         print("Please provide additional information:")
@@ -112,8 +178,7 @@ class Client:
         if self.shared_key is None:
             temporary_key = hashlib.sha256("temporary_key".encode()).digest()
             self.shared_key = temporary_key
-            shared_key_str = base64.b64encode(self.shared_key).decode(
-                'utf-8')  # Convert bytes to Base64-encoded string
+            shared_key_str = base64.b64encode(self.shared_key).decode('utf-8')
 
             request = {
                 "action": "add_additional_info",
@@ -125,8 +190,7 @@ class Client:
             }
             self.send_request(request)
         else:
-            shared_key_str = base64.b64encode(self.shared_key).decode(
-                'utf-8')  # Convert bytes to Base64-encoded string
+            shared_key_str = base64.b64encode(self.shared_key).decode('utf-8')
             request = {
                 "action": "add_additional_info",
                 "national_id": self.national_id,
@@ -137,6 +201,8 @@ class Client:
             }
 
             self.send_request(request)
+
+
     def get_additional_info(self):
         # Check if there are existing additional information
         if self.phone_number or self.mobile_number or self.address:
@@ -155,6 +221,9 @@ class Client:
         else:
             # No existing additional information found, proceed with adding new information
             self.add_additional_info()
+
+
+
 
 
     def display_options(self, status):
@@ -177,6 +246,10 @@ class Client:
         else:
             print("No additional options available.")
 
+
+
+
+
     def send_request(self, request):
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.connect(self.server_address)
@@ -190,40 +263,46 @@ class Client:
                     else:
                         hashed_password = hashlib.sha256(request['password'].encode('utf-8')).hexdigest()
                         encrypted_password = self.encrypt_data(hashed_password)
-                        request['password'] = base64.b64encode(encrypted_password).decode('utf-8') if isinstance(
+                        encrypted_password2 = base64.b64encode(encrypted_password).decode('utf-8') if isinstance(
                             encrypted_password, bytes) else encrypted_password
 
-                        client.send(json.dumps(request).encode('utf-8'))
+                        encrypted_user_name = self.encrypt_data(request['username'])
+                        encrypted_shared_key = self.encrypt_shared_key()
+                        action = request['action']
+                        if 'national_id' in request:
+                             encrypted_national_id = self.encrypt_data(request['national_id'])
+
+                             requestt = {
+                                 "action": action,
+                                 "username": encrypted_user_name,
+                                 "password": encrypted_password2,
+                                 "national_id": encrypted_national_id,
+                                 "shared_key": encrypted_shared_key
+                             }
+                             client.send(json.dumps(requestt).encode('utf-8'))
+
+                        else:
+                            requestt = {
+                                "action": action,
+                                "username": encrypted_user_name,
+                                "password": encrypted_password2,
+                                # "national_id": encrypted_national_id,
+                                "shared_key": encrypted_shared_key
+                            }
+                            client.send(json.dumps(requestt).encode('utf-8'))
 
                         response = client.recv(4096)
                         # print(f"Raw server response: {response}")
                         decrypted_response = self.decrypt_data(response)
                         print(f"Decrypted server response: {decrypted_response}")
 
-                        # server_response_data = json.loads(decrypted_response)
-                        status2 = decrypted_response.get("status")
-                        if status2 == "success" :
+                        # Parse the JSON string into a dictionary
+                        response_dict = json.loads(decrypted_response)
+
+                        # Now you can use .get() on the dictionary
+                        status2 = response_dict.get("status")
+                        if status2 == "success":
                             self.display_options(status2)
-
-
-                         # Check if the server response includes the option to add additional information
-                        # server_response_data = json.loads(decrypted_response)
-                        # allow_additional_info = server_response_data.get("allow_additional_info", False)
-                        #
-                        # if allow_additional_info:
-                        #     print("You can now add additional information.")
-                        #     user_choice = input("Do you want to add additional information? (yes/no): ").lower()
-                        #     if user_choice == "yes":
-                        #         # Call the method to add additional information
-                        #         self.get_additional_info()
-                        #     elif user_choice == "no":
-                        #         print("You chose not to add additional information.")
-                        #         # Implement logic for the case where the user chooses not to add additional information
-                        #     else:
-                        #         print("Invalid choice. Please enter 'yes' or 'no'.")
-                        #         # Implement logic to handle invalid input
-                        # else:
-                        #     print("Adding additional information is not allowed at the moment.")
 
 
             elif request["action"] == "add_additional_info":
@@ -232,13 +311,14 @@ class Client:
                     encrypted_phone_number = self.encrypt_data(request['phone_number'])
                     encrypted_mobile_number = self.encrypt_data(request['mobile_number'])
                     encrypted_address = self.encrypt_data(request['address'])
+                    encrypted_shared_key = self.encrypt_shared_key()
                     request2 = {
                         "action": "add_additional_info",
                         "national_id": request['national_id'],
                         "phone_number": encrypted_phone_number,
                         "mobile_number": encrypted_mobile_number,
                         "address": encrypted_address,
-                        "shared_key": request['shared_key']
+                        "shared_key": encrypted_shared_key
                     }
                     # print("Sending request:", json.dumps(request2))
                     client.send(json.dumps(request2).encode('utf-8'))
@@ -255,15 +335,16 @@ class Client:
             client.close()
 
     def register(self, username, password, national_id):
-        self.national_id = national_id  # تحديث الرقم الوطني
-        self.shared_key = self.generate_key(self.national_id)  # تحديث المفتاح
-        shared_key_str = base64.b64encode(self.shared_key).decode('utf-8')  # Convert bytes to Base64-encoded string
+        self.national_id = national_id
+        self.shared_key = self.generate_key(self.national_id)
+        # Convert bytes to Base64-encoded string
+        shared_key_str = base64.b64encode(self.shared_key).decode('utf-8')
         request = {
             "action": "register",
             "username": username,
             "password": password,
             "national_id": national_id,
-            "shared_key": shared_key_str  # Include the string representation in the request
+            "shared_key": shared_key_str
         }
         self.send_request(request)
 
@@ -271,7 +352,8 @@ class Client:
         if self.shared_key is None:
             temporary_key = hashlib.sha256("temporary_key".encode()).digest()
             self.shared_key = temporary_key
-            shared_key_str = base64.b64encode(self.shared_key).decode('utf-8')  # Convert bytes to Base64-encoded string
+            # Convert bytes to Base64-encoded string
+            shared_key_str = base64.b64encode(self.shared_key).decode('utf-8')
 
             request = {
                     "action": "login",
@@ -288,12 +370,7 @@ class Client:
                 "username": username,
                 "password": password,
                 # "national_id": self.national_id,
-                 "shared_key": shared_key_str
+                "shared_key": shared_key_str
             }
             self.send_request(request)
-            # logging.error("Failed to generate a shared key.")
 
-# إليك كيفية استخدام العميل:
-# client = Client(('127.0.0.1', 12345))  # قم بتعيين العنوان والمنفذ الخاصين بالخادم
-# national_id = "123456789"  # استبدله برقم وطني حقيقي
-# client.register("example_user", "example_password", national_id)
