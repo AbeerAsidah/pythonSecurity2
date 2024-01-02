@@ -25,9 +25,11 @@ def main():
         if choice == "1":
             # Register a new user
             register_username = input("Enter username for registration: ")
+            type1 = input(" Enter your type ( student/doctor) ")
             national_id = input("Enter national ID for registration: ")
             register_password = input("Enter password for registration: ")
-            client.register(register_username, register_password, national_id)
+            client.register(register_username, type1, register_password, national_id)
+            # client.get_additional_info()
 
         elif choice == "2":
             # Login with an existing user
